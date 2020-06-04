@@ -58,19 +58,6 @@ try to see Position encoding in transformer  in PTT(week 17)
 # https://tobiaslee.top/2018/12/13/Start-from-Transformer/
 
 '''
-
-'''
-other thing:
-每個編碼器與解碼器中的每個子層周圍都有一個殘差連接加上歸一化(not BN , it is LN(Layer Normalization))
-
-解碼器的自注意力層只針對到當前由左到右到目前的位置,其他尚未處理的單字將被mask掉
-
-feed forward nerwork:
-FFN(x) = max(0,xW1 + b1)W2 + b2
-
-
-
-'''
 import tensorflow as tf
 import numpy as np
 import  matplotlib.pyplot as plt
@@ -79,17 +66,8 @@ import  matplotlib.pyplot as plt
 # os.environ['KMP_DUPLICATE_LIB_OK']='True'
 
 
-# numpy arrange https://numpy.org/doc/stable/reference/generated/numpy.arange.html
-# numpy newaxis https://blog.csdn.net/lanchunhui/article/details/49725065
-# 雙冒號 https://blog.csdn.net/Evan123mg/article/details/49232089
-# == PE
 def positional_encoding(pos,d_model):
-    '''
 
-    :param pos: 詞在句中的位置,句子上的維度 (i 是d_model上的維度)
-    :param d_model: 隱狀態的維度,相當於 num_units
-    :return: 位置編碼, shpae=[1,position_num,d_model],其中第一個是為了匹配batch_size
-    '''
     def get_angles(position,i):
         # i相當於公式裡面的2i or 2i+1
         # 返回 shape=[position_num, d_model]
@@ -105,16 +83,9 @@ def positional_encoding(pos,d_model):
     pos_encoding = tf.cast(pos_encoding[np.newaxis, ...], tf.float32) # change to tf type && add a axis for batch
     return  pos_encoding
 
-#english https://www.goeducation.com.tw/%E5%A4%9A%E7%9B%8A%E8%80%83%E8%A9%A6%EF%BC%8D%E5%8A%A0%E6%B8%9B%E4%B9%98%E9%99%A4%E7%9A%84%E8%8B%B1%E6%96%87.html
-
-## Linear (V K Q) => Scaled Dot-Product Attention ==>Concat ==> linear ==> Multi-Head Attention
-
-'''================1.First Part: Scaled dot-product attention====== ()'''
 
 def scaled_dot_product_attention(q, k, v, mask):
-    '''attention(Q,K,V) = softmax(Q * K^T / sqrt(dk)) * V'''
-    # query times key(兩個相乘)
-    #https://blog.csdn.net/mumu_1233/article/details/78887068
+
     matmul_qk = tf.matmul(q, k, transpose_b=True)
 
     #使用dk進行縮放????
@@ -132,14 +103,6 @@ def scaled_dot_product_attention(q, k, v, mask):
     return outputs, attention_weights
 
 
-'''================== 2.Second Part: Multi-Head Attention ===================='''
-'''
-multi-head attention 包含三個部分：.-.線性層與分頭 .-. 縮放點積注意力 .-.頭連接 .-. 末尾線性層
-每個多頭注意塊有三個數入;Q(查詢)，K(密鑰)，V(值)。 他們通過第一層線性層並分成多個頭
-注意：點積注意力時需要使用mask,多頭輸出需要使用tf.transpose調整各維度
-Q,K,V不是一個單獨的注意頭,而是分成多個頭,因為他允許模型參與來自不同表徵空間的不同信息．
-在拆分之後,每個頭部具有降低的維度,總計算成本與具有全維度的單個頭部注意力相同
-'''
 class MultiHeadAttention(tf.keras.layers.Layer):
     def __init__(self, d_model, num_heads):
         super(MultiHeadAttention, self).__init__()
@@ -157,10 +120,7 @@ class MultiHeadAttention(tf.keras.layers.Layer):
     def split_heads(self, x, batch_size):
         #分頭 將頭個數的維度, 放到seq_len前面, x輸入shape=[batch_size,seq_len, d_model]
         x = tf.reshape(x,[batch_size, -1, self.num_heads,self.depth]) # https://blog.csdn.net/lxg0807/article/details/53021859
-        # print('split_heads')
-        # print(x)
-        # print('x_transpose \n ')
-        # print(tf.transpose(x,perm=[0,2,1,3]))
+  
         return tf.transpose(x, perm=[0, 2, 1, 3])
 
     def call(self, q, k, v, mask):
@@ -174,16 +134,13 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         q = self.split_heads(q, batch_size)  # shape=[batch_size, num_heads, seq_len, depth]
         k = self.split_heads(k, batch_size)
         v = self.split_heads(v, batch_size)
-        # 通過縮放點積注意力層
-        # scaled_attention shape = [batch_size, num_heads, seq_len_q, depth]
-        # attention_weights shape = [batch_size, num_heads,seq_len_q,sen_len_k]
+        
         scaled_attention, attention_weights = scaled_dot_product_attention(q, k, v, mask)
         # 把多頭維度後移
         scaled_attention = tf.transpose(scaled_attention, perm=[0, 2, 1, 3]) #shape=[batch_size,seq_len_q,num_heads,depth]
-        # 多頭合併
+  
         concat_attention = tf.reshape(scaled_attention, (batch_size, -1, self.d_models)) #shape=[batch_size,seq_len_q,d_model]
 
-        # 全連接重朔
         output = self.dense(concat_attention)
         return output, attention_weights
 
@@ -215,13 +172,7 @@ def point_wise_feed_forward(d_model, diff):
         [tf.keras.layers.Dense(diff, activation=tf.nn.relu),
          tf.keras.layers.Dense(d_model)])
 
-'''
-encoder layer
-每個編碼層包含下列子層 Multi-head attention(帶掩碼) , Point wise feed forward networks
-每個子層都有殘差連接 並最後通過一個正則化層 , 殘差連接有助於避免梯度消失
-每個子層輸出是LayerNorm(x + Sublayer(x)) 規範化是在d_model維度的向量上,Transformer一共n個編碼層
 
-'''
 class EncoderLayer(tf.keras.layers.Layer):
 
     def __init__(self, d_model, num_heads, dff, dropout_rate=0.1):
@@ -282,10 +233,7 @@ def create_padding_mask(seq):
 
 #look-ahead-mask
 def create_look_ahead_mask(size):
-    '''用於對未預測的token 進行掩碼, 這意味要預測的第三個單詞,只會使用第一個詞跟第二個詞
-       要預測第四個詞,僅使用第一個,第二個,第三個詞,以此類推,只有decoder用到
-       # 產生一個上三角矩陣, 上三角的值全為0, 把這個矩陣作用在每一個序列上,就可以達到目的
-    '''
+
     mask = 1 - tf.linalg.band_part(tf.ones((size, size)), -1, 0)
     return mask  # shape=[seq_len,seq_len]
 
@@ -308,20 +256,6 @@ def create_mask(inputs, targets):
     return encoder_padding_mask, look_ahead_task, decoder_padding_mask
 
 
-'''
-decoder layer:
-每個編碼層包含以下子層： 
---Masked multi-head attention (帶padding掩碼跟look-ahead掩碼)
---Multi-head attention(帶padding掩碼), value 跟 key 來自 encoder輸出
-query 來自 Masked multi-head attention層輸出 
---Point wise feed forward network 
-每個子層都有殘差連接, 並最後通過一個正則化層,
-每個子層輸出是 LayerNorm(x + Sublayer(x)) , 規範化是在d_model維的向量上,一共n個解碼層
-當Q從解碼器的第一個注意塊接收輸出, 並且K接收編碼器輸出時, 注意全中表示基於編碼器輸出給予解碼器輸入的重要性
-換句話說, 解碼器通過查看編碼器輸出並自我關注自己的輸出,來預測下一個字
-ps.因為 padding在後面,所以look-ahead掩碼同時掩padding
-
-'''
 class DecoderLayer(tf.keras.layers.Layer):
     def __init__(self, d_model, num_heads, dff, dropout_rate=0.1):
         super(DecoderLayer, self).__init__()
